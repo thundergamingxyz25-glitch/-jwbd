@@ -1,0 +1,76 @@
+name: Cloudflare Web Terminal (Port 8080)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  web-vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Install Cloudflared
+        run: |
+          # Add Cloudflare official GPG key
+          sudo mkdir -p --mode=0755 /usr/share/keyrings
+          curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg | sudo tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null
+
+          # Add Cloudflare repository
+          echo 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
+
+          # Install cloudflared
+          sudo apt-get update && sudo apt-get install -y cloudflared
+
+      - name: Install and Start Root Web Terminal (ttyd on port 8080)
+        run: |
+          # 1. Download official ttyd binary
+          sudo curl -sLo /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64
+          sudo chmod +x /usr/local/bin/ttyd
+
+          # 2. Set root password
+          echo "root:runner" | sudo chpasswd
+
+          # 3. Start web terminal running bash directly as root with write permissions
+          sudo ttyd --port 8080 --credential root:runner -W /bin/bash > ttyd.log 2>&1 &
+          sleep 2
+
+      - name: Start Cloudflare Quick Tunnel & Display Web Link
+        run: |
+          # 1. Start Cloudflare Quick Tunnel forwarding local port 8080 over HTTPS
+          cloudflared tunnel --url http://localhost:8080 > cf_tunnel.log 2>&1 &
+
+          # 2. Extract public trycloudflare.com URL from output logs
+          for i in {1..25}; do
+            CF_URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" cf_tunnel.log | head -n 1)
+            if [ -n "$CF_URL" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -n "$CF_URL" ]; then
+            echo "=========================================================="
+            echo "🚀 PUBLIC CLOUDFLARE WEB TERMINAL READY!"
+            echo ""
+            echo "Direct Browser URL:"
+            echo "  $CF_URL"
+            echo ""
+            echo "Credentials:"
+            echo "  Username: root"
+            echo "  Password: runner"
+            echo "=========================================================="
+
+            # Output directly to GitHub Actions Summary Dashboard
+            echo "### 🌐 Public Cloudflare Web Terminal" >> $GITHUB_STEP_SUMMARY
+            echo "- **Terminal URL:** [$CF_URL]($CF_URL)" >> $GITHUB_STEP_SUMMARY
+            echo "- **Username:** \`root\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Password:** \`runner\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Cloudflare tunnel failed to generate URL. Log output:"
+            cat cf_tunnel.log
+            exit 1
+          fi
+
+      - name: Keep Runner Alive
+        run: |
+          echo "Web terminal live for 6 hours..."
+          sleep 21600
